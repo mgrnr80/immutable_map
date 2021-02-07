@@ -27,6 +27,7 @@ SOFTWARE.
 #include <array>
 #include <functional>
 #include <utility>
+#include <memory>
 
 template <class K, class T>
 class immutable_map
@@ -62,20 +63,12 @@ public:
         std::swap(size_, other.size_);
     }
 
-    T& at(const K& key)
-    {
-        path p;
-        auto match = find(p, key);
-        if (!match) throw std::out_of_range();
-        return p->get_node()->get_pair()->second;
-    }
-
     const T& at(const K& key) const
     {
         path p;
         auto match = find(p, key);
-        if (!match) throw std::out_of_range();
-        return p->get_node()->get_pair()->second;
+        if (!match) throw std::out_of_range("missing key");
+        return p.get_node()->get_pair()->second;
     }
 
     bool empty() const
