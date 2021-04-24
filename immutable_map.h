@@ -109,16 +109,23 @@ public:
         return match;
     }
 
-    void foreach(std::function<void(const pair&)> f) const
+    template <class Function>
+    void foreach(Function f) const
     {
         if (root_) root_->foreach(f);
     }
 
-    void validate() const
+    template <class Function, class Pred1, class Pred2>
+    void foreach(Function f, Pred1 take_from, Pred2 take_to) const
+    {
+        if (root_) root_->foreach(f, take_from, take_to);
+    }
+
+    /*void validate() const
     {
         if (root_ && root_->is_red()) throw std::runtime_error("root is red");
         if (root_) root_->validate();
-    }
+    }*/
 
 private:
 
@@ -189,14 +196,25 @@ private:
             return new_node;      
         }
 
-        void foreach(const std::function<void(const pair&)>& f) const
+        template <class Function>
+        void foreach(Function f) const
         {
             if (get_child(LEFT)) get_child(LEFT)->foreach(f);
             f(*kvp_);
             if (get_child(RIGHT)) get_child(RIGHT)->foreach(f);
         }
 
-        int validate() const
+        template <class Function, class Pred1, class Pred2>
+        void foreach(const Function& f, const Pred1& take_from, const Pred2& take_to) const
+        {
+            bool tf = take_from(kvp_->first);
+            bool tt = take_to(kvp_->first);
+            if (tf && get_child(LEFT)) get_child(LEFT)->foreach(f, take_from, take_to);
+            if (tf && tt) f(*kvp_);
+            if (tt && get_child(RIGHT)) get_child(RIGHT)->foreach(f, take_from, take_to);
+        }
+
+        /*int validate() const
         {
             int depth = 1, depth1, depth2;
             if (is_red())
@@ -213,7 +231,7 @@ private:
             else depth2 = 0;
             if (depth1 != depth2) throw std::runtime_error("invalid black depth");
             return depth1 + depth;
-        }
+        }*/
 
         std::shared_ptr<const pair> kvp_;
         std::shared_ptr<const node> children_[2];
