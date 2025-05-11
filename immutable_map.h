@@ -34,6 +34,8 @@ class immutable_map
 {
 public:
     typedef typename std::pair<K, T> pair;
+    typedef typename std::shared_ptr<const pair> cp_pair;
+    typedef const cp_pair& cp_pair_cref;
 
     immutable_map()
       : root_(nullptr),
@@ -170,6 +172,13 @@ private:
             return (children_[0] && children_[0]->is_red()) || (children_[1] && children_[1]->is_red());
         }
 
+        size_t get_depth() const
+        {
+            size_t left_depth = children_[LEFT] ? children_[LEFT]->get_depth() : 0;
+            size_t right_depth = children_[RIGHT] ? children_[RIGHT]->get_depth() : 0;
+            return 1 + std::max(left_depth, right_depth);
+        }
+
         void set_pair(std::shared_ptr<const pair> kvp)
         {
             kvp_ = kvp;
@@ -194,6 +203,19 @@ private:
                 get_color()
             );
             return new_node;      
+        }
+
+        std::shared_ptr<node> clone_and_replace(const node* replace_terget, cp_pair_cref replace_kvp) const
+        {
+            bool substitute = this == replace_terget;
+            cp_pair_cref kvp = substitute ? replace_kvp : kvp_;
+            auto new_node = std::make_shared<immutable_map::node>(
+                kvp,
+                get_child(LEFT),
+                get_child(RIGHT),
+                get_color()
+            );
+            return new_node;
         }
 
         template <class Function>
@@ -237,6 +259,9 @@ private:
         std::shared_ptr<const node> children_[2];
         color_t color_;
     };
+
+    typedef typename std::shared_ptr<const node> cp_node;
+    typedef const cp_node& cp_node_cref;
 
     class path
     {
@@ -442,6 +467,21 @@ private:
         return n;
     }
 
+    std::shared_ptr<node> clone_path(path& p, std::shared_ptr<node> n, const node* replace_target, cp_pair_cref replace_kvp) const
+    {
+        while (auto parent = p.get_node())
+        {
+            auto new_parent = parent->clone_and_replace(replace_target, replace_kvp);
+            if (new_parent->get_key() > n->get_key())
+                new_parent->set_child(LEFT, n);
+            else
+                new_parent->set_child(RIGHT, n);
+            n = new_parent;
+            p.pop();
+        }
+        return n;
+    }
+
     void find_predecessor(path& p) const
     {
         auto node = p.get_node()->get_child(LEFT);
@@ -508,12 +548,12 @@ private:
         auto predecessor_depth = p.size();
         auto predecessor_side = (predecessor_depth - depth) > 1 ? RIGHT : LEFT;
         auto predecessor_color = predecessor->get_color();
-        auto new_node = predecessor->clone();
-        new_node->set_color(node_color);
         if (predecessor_color == RED) // removed node is red
         {
             p.pop();
             auto sub_tree = clone_path(p, nullptr, predecessor_side, depth);
+            auto new_node = predecessor->clone();
+            new_node->set_color(node_color);
             new_node->set_child(LEFT, sub_tree);
             new_node->set_child(RIGHT, erased_node->get_child(RIGHT));
             p.pop();
@@ -527,6 +567,8 @@ private:
                 new_child->set_color(BLACK);
                 p.pop();
                 auto sub_tree = clone_path(p, new_child, depth);
+                auto new_node = predecessor->clone();
+                new_node->set_color(node_color);
                 new_node->set_child(LEFT, sub_tree);
                 new_node->set_child(RIGHT, erased_node->get_child(RIGHT));
                 p.pop();
@@ -534,63 +576,62 @@ private:
             }
             else // removed node is black with no children
             {
-                p.pop();
-                auto kvp = predecessor_side == LEFT ? predecessor->get_pair() : p.get_node()->get_pair();
-                auto sub_tree = clone_path(p, nullptr, predecessor_side, depth);
-                new_node->set_child(LEFT, sub_tree);
-                new_node->set_child(RIGHT, erased_node->get_child(RIGHT));
-                p.pop();
-                auto temp_root = clone_path(p, new_node);
-                find(temp_root, p, kvp->first);
-                auto new_parent = p.get_node();
-                p.pop();
-                return delete_fixup(p, new_parent, predecessor_side);
+                auto parent_side = p.get_parent()->get_key() > predecessor->get_key() ? LEFT : RIGHT;
+                auto new_parent = p.get_parent()->clone_and_replace(erased_node.get(), predecessor->get_pair());
+                new_parent->set_child(parent_side, nullptr);
+                p.pop(); p.pop();
+                return delete_fixup(p, new_parent, parent_side, erased_node.get(), predecessor->get_pair());
             }
         }
     }
 
     std::shared_ptr<node> delete_fixup(path& p, std::shared_ptr<const node> parent, int side) const
     {
+        return delete_fixup(p, parent, side, nullptr, nullptr);
+    }
+
+    std::shared_ptr<node> delete_fixup(path& p, std::shared_ptr<const node> parent, int side, const node* replace_target, cp_pair_cref replace_kvp) const
+    {
         if (has_black_sibling_with_red_child(parent, side))
         {
-            auto new_parent = delete_fixup_1(parent, side);
-            return clone_path(p, new_parent);
+            auto new_parent = delete_fixup_1(parent, side, replace_target, replace_kvp);
+            return clone_path(p, new_parent, replace_target, replace_kvp);
         }
         else if (has_black_sibling_with_black_children(parent, side))
         {
             auto parent_color = parent->get_color();
-            auto new_parent = delete_fixup_2(parent, side);
+            auto new_parent = delete_fixup_2(parent, side, replace_target, replace_kvp);
             if (parent_color == BLACK && p.size() > 0) // parent is black and not root
             {
                 auto grand_parent = p.get_node();
                 auto parent_side = grand_parent->get_key() > parent->get_key() ? LEFT : RIGHT;
-                auto new_grand_parent = grand_parent->clone();
+                auto new_grand_parent = grand_parent->clone_and_replace(replace_target, replace_kvp);
                 new_grand_parent->set_child(parent_side, new_parent);
                 p.pop();
-                return delete_fixup(p, new_grand_parent, parent_side);
+                return delete_fixup(p, new_grand_parent, parent_side, replace_target, replace_kvp);
             }
             else
             {
-                return clone_path(p, new_parent);
+                return clone_path(p, new_parent, replace_target, replace_kvp);
             }
         }
         else
         {
-            auto new_parent = delete_fixup_3(parent, side);
-            return clone_path(p, new_parent);
+            auto new_parent = delete_fixup_3(parent, side, replace_target, replace_kvp);
+            return clone_path(p, new_parent, replace_target, replace_kvp);
         }
     }
 
-    std::shared_ptr<node> delete_fixup_1(std::shared_ptr<const node> parent, int side) const
+    std::shared_ptr<node> delete_fixup_1(std::shared_ptr<const node> parent, int side, const node* replace_target, cp_pair_cref replace_kvp) const
     {
         auto parent_color = parent->get_color();
         auto sibling = parent->get_child(1 - side);
         auto child_1 = sibling->get_child(side);
         if (child_1 && child_1->is_red())
         {
-            auto new_child_1 = child_1->clone();
-            auto new_parent = parent->clone();
-            auto new_sibling = sibling->clone();
+            auto new_child_1 = child_1->clone_and_replace(replace_target, replace_kvp);
+            auto new_parent = parent->clone_and_replace(replace_target, replace_kvp);
+            auto new_sibling = sibling->clone_and_replace(replace_target, replace_kvp);
             new_child_1->set_color(parent_color);
             new_child_1->set_child(side, new_parent);
             new_child_1->set_child(1 - side, new_sibling);
@@ -602,9 +643,9 @@ private:
         else
         {
             auto child_2 = sibling->get_child(1 - side);
-            auto new_child_2 = child_2->clone();
-            auto new_parent = parent->clone();
-            auto new_sibling = sibling->clone();
+            auto new_child_2 = child_2->clone_and_replace(replace_target, replace_kvp);
+            auto new_parent = parent->clone_and_replace(replace_target, replace_kvp);
+            auto new_sibling = sibling->clone_and_replace(replace_target, replace_kvp);
             new_sibling->set_color(parent_color);
             new_sibling->set_child(side, new_parent);
             new_sibling->set_child(1 - side, new_child_2);
@@ -615,35 +656,35 @@ private:
         }
     }
 
-    std::shared_ptr<node> delete_fixup_2(std::shared_ptr<const node> parent, int side)  const // recoloring
+    std::shared_ptr<node> delete_fixup_2(std::shared_ptr<const node> parent, int side, const node* replace_target, cp_pair_cref replace_kvp)  const // recoloring
     {
         auto sibling = parent->get_child(1 - side);
-        auto new_sibling = sibling->clone();
-        auto new_parent = parent->clone();
+        auto new_sibling = sibling->clone_and_replace(replace_target, replace_kvp);
+        auto new_parent = parent->clone_and_replace(replace_target, replace_kvp);
         new_sibling->set_color(RED);
         new_parent->set_color(BLACK);
         new_parent->set_child(1 - side, new_sibling);
         return new_parent;
     }
 
-    std::shared_ptr<node> delete_fixup_3(std::shared_ptr<const node> parent, int side)  const // adjustment
+    std::shared_ptr<node> delete_fixup_3(std::shared_ptr<const node> parent, int side, const node* replace_target, cp_pair_cref replace_kvp)  const // adjustment
     {
         auto sibling = parent->get_child(1 - side);
-        auto new_sibling = sibling->clone();
-        auto new_parent = parent->clone();
+        auto new_sibling = sibling->clone_and_replace(replace_target, replace_kvp);
+        auto new_parent = parent->clone_and_replace(replace_target, replace_kvp);
         new_sibling->set_color(parent->get_color());
         new_sibling->set_child(side, new_parent);
         new_parent->set_color(RED);
         new_parent->set_child(1 - side, sibling->get_child(side));
         if (has_black_sibling_with_red_child(new_parent, side))
         {
-            new_parent = delete_fixup_1(new_parent, side);
+            new_parent = delete_fixup_1(new_parent, side, replace_target, replace_kvp);
             new_sibling->set_child(side, new_parent);
             return new_sibling;
         }
         else if (has_black_sibling_with_black_children(new_parent, side))
         {
-            new_parent = delete_fixup_2(new_parent, side);
+            new_parent = delete_fixup_2(new_parent, side, replace_target, replace_kvp);
             new_sibling->set_child(side, new_parent);
             return new_sibling;
         }
